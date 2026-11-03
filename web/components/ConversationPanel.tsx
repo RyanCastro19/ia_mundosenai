@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
+import { VoiceModeOverlay } from './VoiceModeOverlay';
 
 interface Msg {
   role: 'user' | 'assistant';
@@ -34,13 +35,11 @@ export function ConversationPanel({ assistantName }: { assistantName: string }) 
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [thinking, setThinking] = useState(false);
-  const [recording, setRecording] = useState(false);
   const [muted, setMuted] = useState(false);
   const [saveOff, setSaveOff] = useState(false); // modo privado (não salva histórico)
+  const [voiceOpen, setVoiceOpen] = useState(false); // modo conversa por áudio (tela cheia)
   const { t } = useI18n();
   const logRef = useRef<HTMLDivElement>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
   const mutedRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -139,75 +138,6 @@ export function ConversationPanel({ assistantName }: { assistantName: string }) 
       ]);
     } finally {
       setThinking(false);
-    }
-  }
-
-  // ---- Entrada de voz (grava no navegador → POST /chat/voice) ----
-  async function sendVoice(blob: Blob) {
-    setThinking(true);
-    try {
-      const res = await api.chatVoice(blob, !saveOff);
-      setMessages((m) => [
-        ...m,
-        { role: 'user', content: res.transcription || '(áudio)' },
-        {
-          role: 'assistant',
-          content: res.reply,
-          offline: !res.ok,
-          tools: res.toolsUsed,
-          coder: res.coder,
-          previewUrl: res.previewUrl,
-        },
-      ]);
-      speak(res.audioUrl);
-    } catch (err) {
-      setMessages((m) => [
-        ...m,
-        { role: 'assistant', content: `Falha ao enviar o áudio (${(err as Error).message}).`, offline: true },
-      ]);
-    } finally {
-      setThinking(false);
-    }
-  }
-
-  async function toggleRecording() {
-    if (recording) {
-      recorderRef.current?.stop();
-      setRecording(false);
-      return;
-    }
-    if (thinking) return;
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setMessages((m) => [
-        ...m,
-        { role: 'assistant', content: 'Seu navegador não suporta gravação de áudio.', offline: true },
-      ]);
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
-      chunksRef.current = [];
-      rec.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-      rec.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
-        void sendVoice(blob);
-      };
-      recorderRef.current = rec;
-      rec.start();
-      setRecording(true);
-    } catch {
-      setMessages((m) => [
-        ...m,
-        {
-          role: 'assistant',
-          content: 'Não consegui acessar o microfone. Verifique a permissão do navegador.',
-          offline: true,
-        },
-      ]);
     }
   }
 
@@ -369,48 +299,34 @@ export function ConversationPanel({ assistantName }: { assistantName: string }) 
       <div style={{ display: 'flex', gap: 8, marginTop: '1rem' }}>
         <button
           type="button"
-          onClick={toggleRecording}
+          onClick={() => setVoiceOpen(true)}
           disabled={thinking}
-          aria-label={recording ? 'Parar gravação' : 'Gravar áudio'}
-          title={recording ? 'Parar e enviar' : t('conversation.title', { name: assistantName })}
+          aria-label="Conversar por áudio"
+          title="Conversar por áudio"
           className="btn"
-          style={{
-            padding: '0.5rem 0.7rem',
-            borderColor: recording ? 'var(--color-danger)' : undefined,
-            background: recording ? 'rgba(224,106,91,0.15)' : undefined,
-          }}
+          style={{ padding: '0.5rem 0.7rem' }}
         >
-          {recording ? (
-            <span
-              style={{
-                display: 'inline-block',
-                width: 12,
-                height: 12,
-                borderRadius: 3,
-                background: 'var(--color-danger)',
-                animation: 'pulse 1s ease-in-out infinite',
-              }}
-            />
-          ) : (
-            '🎙'
-          )}
+          🎙
         </button>
         <input
           className="field mono"
-          placeholder={
-            recording
-              ? '● gravando… toque no quadrado para enviar'
-              : t('conversation.placeholder', { name: assistantName })
-          }
+          placeholder={t('conversation.placeholder', { name: assistantName })}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && send()}
-          disabled={recording}
         />
-        <button className="btn btn-amber" onClick={send} disabled={thinking || recording || !input.trim()}>
+        <button className="btn btn-amber" onClick={send} disabled={thinking || !input.trim()}>
           {t('conversation.send')}
         </button>
       </div>
+
+      {voiceOpen && (
+        <VoiceModeOverlay
+          assistantName={assistantName}
+          salvarHistorico={!saveOff}
+          onClose={() => setVoiceOpen(false)}
+        />
+      )}
     </section>
   );
 }
